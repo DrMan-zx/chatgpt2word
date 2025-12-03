@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -X POST http://localhost:8000/convert -F \"html=@shared/chat.txt\" -F \"filename=test_docx\" -o result.docx)",
+      "Bash(curl -X POST http://localhost:8000/convert -F \"html=@shared/chat.txt\" -F \"filename=test_pdf\" -F \"output_format=pdf\" -o result.pdf)",
+      "Bash(cat result.docx)",
+      "Bash(curl -X POST http://localhost:8000/convert --data-urlencode \"html@shared/chat.txt\" -F \"filename=test_docx\" -o result.docx)",
+      "Bash(python test_api.py)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
