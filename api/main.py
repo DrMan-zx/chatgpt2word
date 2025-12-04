@@ -46,15 +46,36 @@ MAX_HTML_SIZE = 50 * 1024 * 1024  # 50MB
 PANDOC_TIMEOUT = 30  # seconds
 
 
+def remove_emojis(text: str) -> str:
+    """
+    删除字符串中的常见 emoji / pictograph 字符。
+    通过匹配常见 emoji 的 Unicode 区段实现。
+    """
+    if not text:
+        return text
+
+    emoji_pattern = re.compile(
+        "["                     # 以下是常见 emoji / symbol 区段
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map
+        "\U0001F700-\U0001F77F"  # alchemical
+        "\U0001F780-\U0001F7FF"  # geometric
+        "\U0001F800-\U0001F8FF"  # arrows
+        "\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
+        "\U0001FA00-\U0001FA6F"  # chess / symbols
+        "\U00002600-\U000026FF"  # misc symbols (★☀☂等，包括 ✅ 等)
+        "\U00002700-\U000027BF"  # dingbats (✔✘➤等)
+        "]+",
+        flags=re.UNICODE,
+    )
+    return emoji_pattern.sub("", text)
+
+
 def pdf_preprocess_html(html_content: str) -> str:
     """
-    预处理 ChatGPT HTML，移除不必要的标记以提高转换质量。
-
-    Args:
-        html_content: 原始 HTML 内容
-
-    Returns:
-        清理后的 HTML 内容
+    预处理 ChatGPT HTML，移除不必要的标记以提高转换质量（用于 PDF）。
+    同时删除 emoji。
     """
     soup = BeautifulSoup(html_content, 'lxml')
 
@@ -70,19 +91,16 @@ def pdf_preprocess_html(html_content: str) -> str:
             if not div.find() and not div.get_text().strip():
                 div.decompose()
 
-    # 3. 返回处理后的 HTML，保留原始 emoji
+    # 3. 返回前删除 emoji
     result = str(soup)
+    result = remove_emojis(result)
     return result
+
 
 def preprocess_html(html_content: str) -> str:
     """
-    预处理 ChatGPT HTML，移除不必要的标记以提高转换质量。
-
-    Args:
-        html_content: 原始 HTML 内容
-
-    Returns:
-        清理后的 HTML 内容
+    预处理 ChatGPT HTML，移除不必要的标记以提高转换质量（用于 DOCX）。
+    同时删除 emoji。
     """
     soup = BeautifulSoup(html_content, 'lxml')
 
@@ -93,57 +111,45 @@ def preprocess_html(html_content: str) -> str:
             del tag[attr]
 
     # 2. 优化数学公式处理 - 仅在检测到公式时处理
-    # Check if there are any KaTeX annotations before processing
     if soup.find_all("annotation", {"encoding": "application/x-tex"}):
         for ann in soup.find_all("annotation", {"encoding": "application/x-tex"}):
             latex = ann.get_text().strip()
             katex_span = ann.find_parent("span", class_="katex")
             if katex_span:
-                # 检查是否为行内或块级公式
                 parent_classes = katex_span.parent.get('class', []) if katex_span.parent else []
                 katex_classes = katex_span.get('class', [])
 
-                # 判断是否为行内公式
-                is_inline = ('inline' in parent_classes or
-                            'katex-inline' in katex_classes or
-                            'katex' in katex_classes and 'katex-display' not in katex_classes)
+                is_inline = (
+                    ('inline' in parent_classes) or
+                    ('katex-inline' in katex_classes) or
+                    ('katex' in katex_classes and 'katex-display' not in katex_classes)
+                )
 
-                # 策略 1: 创建适合 Pandoc 处理的 LaTeX 格式
-                # 使用 $ 表示行内公式，\\[ \\] 表示块级公式
                 if is_inline:
                     latex_formatted = f"${latex}$"
                 else:
                     latex_formatted = f"\\[{latex}\\]"
 
-                # 创建包含 LaTeX 的 span，让 Pandoc 识别为数学公式
                 new_span = soup.new_tag("span")
                 new_span.string = latex_formatted
-
-                # 替换原始 KaTeX 元素
                 katex_span.replace_with(new_span)
 
-    # 3. 完全重构表格 - 彻底清理所有容器
-    # 查找所有表格并用纯净版本替换
+    # 3. 完全重构表格
     tables = soup.find_all("table")
     for table in tables:
-        # 创建新表格
         new_table = soup.new_tag("table")
-        # 复制表格内容，保持原有结构
         for row in table.find_all("tr"):
             new_row = soup.new_tag("tr")
             for cell in row.find_all(["th", "td"]):
                 new_cell = soup.new_tag(cell.name)
-                # 保留文本和数学公式
                 new_cell.string = cell.get_text()
                 new_row.append(new_cell)
             new_table.append(new_row)
-        # 直接替换原表格（忽略所有父容器）
         table.replace_with(new_table)
 
     # 4. 清理所有表格周围的装饰性容器
     for div in soup.find_all("div"):
         if div.find("table") and not div.get_text().strip():
-            # 如果 div 只包含表格且没有文本内容，替换为表格
             table = div.find("table")
             if table:
                 div.replace_with(table)
@@ -151,7 +157,6 @@ def preprocess_html(html_content: str) -> str:
     # 5. 简化代码块
     pre_tags = soup.find_all("pre")
     for pre_tag in pre_tags:
-        # 查找实际的代码内容
         code_div = pre_tag.find("div", class_="overflow-y-auto")
         if code_div:
             code_tag = code_div.find("code")
@@ -163,15 +168,17 @@ def preprocess_html(html_content: str) -> str:
                 new_pre.append(new_code)
                 pre_tag.replace_with(new_pre)
 
-    # 5. 清理嵌套的复杂容器
+    # 6. 清理嵌套的复杂容器
     for div in soup.find_all("div"):
         if len(div.attrs) == 1 and 'class' in div.attrs:
             if not div.find() and not div.get_text().strip():
                 div.decompose()
 
-    # 6. 返回处理后的 HTML，保留原始 emoji
+    # 7. 返回前删除 emoji
     result = str(soup)
+    result = remove_emojis(result)
     return result
+
 
 def validate_html(html: str) -> bool:
     """
@@ -201,6 +208,7 @@ def validate_html(html: str) -> bool:
 
     return True  # Accept any HTML content now
 
+
 def sanitize_filename(filename: str) -> str:
     """
     Sanitize filename to remove invalid characters.
@@ -226,6 +234,7 @@ def sanitize_filename(filename: str) -> str:
 
     return sanitized or "converted"
 
+
 def convert_html_to_docx(html_content: str) -> bytes:
     """
     Convert HTML with KaTeX formulas to a .docx file.
@@ -241,7 +250,7 @@ def convert_html_to_docx(html_content: str) -> bytes:
         HTTPException: 500 if conversion fails
     """
     try:
-        # Stage 1: Preprocess HTML
+        # Stage 1: Preprocess HTML（这里已经会删除 emoji）
         cleaned_html = preprocess_html(html_content)
 
         # Stage 2: HTML → DOCX (direct conversion)
@@ -310,9 +319,8 @@ def convert_html_to_pdf(html_content: str) -> bytes:
     - wkhtmltopdf 等待 window.status == 'onloadready' 再开始渲染。
     """
     try:
-        # 1. 如需，你也可以先做自己的清洗
-        # cleaned_html = preprocess_html(html_content)
-        cleaned_html = html_content
+        # 1. 先做 PDF 专用预处理（包括删除 emoji）
+        cleaned_html = pdf_preprocess_html(html_content)
 
         # 2. 包装成完整 HTML（含 MathJax2 脚本）
         full_html = wrap_with_mathjax_template(cleaned_html)
@@ -322,16 +330,14 @@ def convert_html_to_pdf(html_content: str) -> bytes:
             html_file = tmpdir_path / "temp_mathjax.html"
             pdf_file = tmpdir_path / "temp_mathjax.pdf"
 
-            # 写入完整 HTML
             with open(html_file, "w", encoding="utf-8", errors="ignore") as f:
                 f.write(full_html)
 
-            # 3. 直接调用 wkhtmltopdf，而不是再通过 pandoc
             cmd_pdf = [
                 "wkhtmltopdf",
                 "--enable-local-file-access",
-                "--javascript-delay", "2000",        # 兜底延时，给 MathJax 一些时间
-                "--window-status", "onloadready",    # 等待 window.status = 'onloadready'
+                "--javascript-delay", "2000",
+                "--window-status", "onloadready",
                 str(html_file),
                 str(pdf_file),
             ]
